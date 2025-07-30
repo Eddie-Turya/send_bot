@@ -1,42 +1,70 @@
-const express = require('express');
-const { makeWASocket, useSingleFileAuthState } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
+const express = require("express");
+const { Client, LocalAuth } = require("whatsapp-web.js");
+const cors = require("cors");
+const qrcode = require("qrcode");
+const fs = require("fs");
+
 const app = express();
 const port = process.env.PORT || 3000;
 
+app.use(cors());
 app.use(express.json());
 
-const { state, saveState } = useSingleFileAuthState('./auth_info.json');
+let sessionReady = false;
+let client;
 
-let sock;
+const SESSION_FILE_PATH = "./session.json";
 
-async function startSock() {
-  sock = makeWASocket({
-    auth: state,
-    printQRInTerminal: true,
-  });
-
-  sock.ev.on('creds.update', saveState);
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect } = update;
-    if (connection === 'close') {
-      const shouldReconnect = (lastDisconnect.error = Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-      if (shouldReconnect) startSock();
-    }
-  });
+// Load saved session if it exists
+let sessionData;
+if (fs.existsSync(SESSION_FILE_PATH)) {
+  sessionData = require(SESSION_FILE_PATH);
 }
-startSock();
 
-// WhatsBulk send endpoint
-app.post('/send', async (req, res) => {
-  const { number, message } = req.body;
+client = new Client({
+  authStrategy: new LocalAuth({ clientId: "whatsbulk" }),
+  puppeteer: { headless: true },
+  session: sessionData,
+});
+
+client.on("qr", async (qr) => {
+  const qrImage = await qrcode.toDataURL(qr);
+  fs.writeFileSync("./qr.json", JSON.stringify({ qr: qrImage }));
+});
+
+client.on("ready", () => {
+  sessionReady = true;
+  console.log("WhatsApp bot is ready!");
+});
+
+client.initialize();
+
+app.get("/status", (req, res) => {
+  res.json({ authenticated: sessionReady });
+});
+
+app.get("/qr", (req, res) => {
   try {
-    await sock.sendMessage(number + '@s.whatsapp.net', { text: message });
-    res.json({ success: true, sent_to: number });
+    const qr = JSON.parse(fs.readFileSync("./qr.json"));
+    res.json(qr);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to send' });
+    res.status(404).json({ error: "QR not ready" });
   }
 });
 
-app.listen(port, () => console.log(`WhatsBulk Bot running on port ${port}`));
+app.post("/send", async (req, res) => {
+  const { number, message } = req.body;
+
+  if (!sessionReady) return res.status(401).json({ success: false, msg: "Not Authenticated" });
+
+  try {
+    await client.sendMessage(`${number}@c.us`, message);
+    res.json({ success: true });
+  } catch (e) {
+    res.json({ success: false, error: e.toString() });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
