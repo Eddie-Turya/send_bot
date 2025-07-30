@@ -1,67 +1,47 @@
-const express = require("express");
-const { Client, LocalAuth } = require("whatsapp-web.js");
-const cors = require("cors");
-const qrcode = require("qrcode");
-const fs = require("fs");
+const express = require('express');
+const cors = require('cors');
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8080;
 
 app.use(cors());
 app.use(express.json());
 
-let sessionReady = false;
-let client;
-
-const SESSION_FILE_PATH = "./session.json";
-
-// Load saved session if it exists
-let sessionData;
-if (fs.existsSync(SESSION_FILE_PATH)) {
-  sessionData = require(SESSION_FILE_PATH);
-}
-
-client = new Client({
-  authStrategy: new LocalAuth({ clientId: "whatsbulk" }),
-  puppeteer: { headless: true },
-  session: sessionData,
+const client = new Client({
+  authStrategy: new LocalAuth(),
+  puppeteer: {
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  }
 });
 
-client.on("qr", async (qr) => {
-  const qrImage = await qrcode.toDataURL(qr);
-  fs.writeFileSync("./qr.json", JSON.stringify({ qr: qrImage }));
+client.on('qr', (qr) => {
+  console.log('QR RECEIVED', qr);
+  qrcode.generate(qr, { small: true });
 });
 
-client.on("ready", () => {
-  sessionReady = true;
-  console.log("WhatsApp bot is ready!");
+client.on('ready', () => {
+  console.log('WhatsApp bot is ready!');
+});
+
+client.on('authenticated', () => {
+  console.log('WhatsApp authenticated');
 });
 
 client.initialize();
 
-app.get("/status", (req, res) => {
-  res.json({ authenticated: sessionReady });
-});
-
-app.get("/qr", (req, res) => {
-  try {
-    const qr = JSON.parse(fs.readFileSync("./qr.json"));
-    res.json(qr);
-  } catch (err) {
-    res.status(404).json({ error: "QR not ready" });
-  }
-});
-
-app.post("/send", async (req, res) => {
+// API endpoint to send message
+app.post('/send', async (req, res) => {
   const { number, message } = req.body;
 
-  if (!sessionReady) return res.status(401).json({ success: false, msg: "Not Authenticated" });
-
   try {
-    await client.sendMessage(`${number}@c.us`, message);
-    res.json({ success: true });
-  } catch (e) {
-    res.json({ success: false, error: e.toString() });
+    const chatId = number.includes('@c.us') ? number : number + '@c.us';
+    await client.sendMessage(chatId, message);
+    res.json({ status: 'success', number });
+  } catch (error) {
+    res.json({ status: 'error', error: error.message });
   }
 });
 
